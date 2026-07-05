@@ -1,0 +1,74 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>9</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <AssemblyName>GoldRushModMenu</AssemblyName>
+    <!--
+      Set GOLD_RUSH_PATH to your game folder before building.
+      Windows example:
+        $env:GOLD_RUSH_PATH = "C:\Program Files (x86)\Steam\steamapps\common\Gold Rush The Game"
+      Or create a local.props file (see README).
+    -->
+    <GoldRushPath Condition="'$(GOLD_RUSH_PATH)' != ''">$(GOLD_RUSH_PATH)</GoldRushPath>
+    <GoldRushPath Condition="'$(GoldRushPath)' == ''">C:\Program Files (x86)\Steam\steamapps\common\Gold Rush The Game</GoldRushPath>
+  </PropertyGroup>
+
+  <!-- Load optional local overrides (not committed to git) -->
+  <Import Project="local.props" Condition="Exists('local.props')" />
+
+  <PropertyGroup>
+    <ManagedPath>$(GoldRushPath)\GoldMiningSimulator_Data\Managed</ManagedPath>
+    <BepInExCorePath>$(GoldRushPath)\BepInEx\core</BepInExCorePath>
+    <!-- Auto-copy DLL to plugins folder after Release build -->
+    <PostBuildEvent Condition="'$(Configuration)'=='Release'">
+      xcopy /Y "$(MSBuildProjectDirectory)\bin\Release\netstandard2.0\$(AssemblyName).dll" "$(GoldRushPath)\BepInEx\plugins\"
+    </PostBuildEvent>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- BepInEx -->
+    <Reference Include="BepInEx">
+      <HintPath>$(BepInExCorePath)\BepInEx.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(BepInExCorePath)\0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+
+    <!-- Unity -->
+    <Reference Include="UnityEngine">
+      <HintPath>$(ManagedPath)\UnityEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(ManagedPath)\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.IMGUIModule">
+      <HintPath>$(ManagedPath)\UnityEngine.IMGUIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.TextRenderingModule">
+      <HintPath>$(ManagedPath)\UnityEngine.TextRenderingModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.InputLegacyModule">
+      <HintPath>$(ManagedPath)\UnityEngine.InputLegacyModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+
+    <!-- Game assemblies -->
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(ManagedPath)\Assembly-CSharp.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Assembly-CSharp-firstpass">
+      <HintPath>$(ManagedPath)\Assembly-CSharp-firstpass.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

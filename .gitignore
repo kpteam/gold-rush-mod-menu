@@ -1,0 +1,19 @@
+﻿# Build output
+bin/
+obj/
+
+# Local machine-specific path override — DO NOT COMMIT
+local.props
+
+# BepInEx log files
+LogOutput.log
+BepInEx/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vs/
+*.user
+*.suo
