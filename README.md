@@ -150,7 +150,7 @@ Natural spawning (via digging mud) still requires the nugget option to be enable
 
 1. Clone this repository:
    ```
-   git clone https://github.com/YOUR_USERNAME/gold-rush-mod-menu.git
+   git clone https://github.com/kpteam/gold-rush-mod-menu.git
    cd gold-rush-mod-menu/src
    ```
 
