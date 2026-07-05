@@ -21,7 +21,8 @@ namespace GoldRushInstaller
 
         private async void OnLoaded(object sender, RoutedEventArgs e)
         {
-            Log("Gold Rush Mod Menu Installer v1.0");
+            Log("Gold Rush Mod Menu Installer v" + InstallerCore.InstallerVersion);
+            InstallerVersionText.Text = InstallerCore.InstallerVersion;
             Log("Detecting game folder…");
 
             var found = InstallerCore.DetectGamePath();
@@ -38,6 +39,7 @@ namespace GoldRushInstaller
             }
 
             await CheckForUpdates();
+            await CheckInstallerVersion();
         }
 
         // ── Game path ──────────────────────────────────────────────────────────
@@ -110,6 +112,86 @@ namespace GoldRushInstaller
             CheckUpdateButton.IsEnabled = true;
         }
 
+        // ── Installer self-update ─────────────────────────────────────────────
+        private async Task CheckInstallerVersion()
+        {
+            try
+            {
+                Log("Checking for installer update…");
+                var remote = await InstallerCore.GetInstallerRemoteVersion();
+                if (remote == null)
+                {
+                    LatestInstallerVersionText.Text = "N/A";
+                    Log("Installer version info not available on repo yet.");
+                    return;
+                }
+                LatestInstallerVersionText.Text = remote;
+                if (InstallerCore.IsNewer(InstallerCore.InstallerVersion, remote))
+                {
+                    UpdateInstallerButton.IsEnabled = true;
+                    LatestInstallerVersionText.Foreground = System.Windows.Media.Brushes.Orange;
+                    Log($"Installer update available: {InstallerCore.InstallerVersion} → {remote}  Click 'Update' to self-update.");
+                }
+                else
+                {
+                    LatestInstallerVersionText.Foreground = System.Windows.Media.Brushes.LightGreen;
+                    Log($"Installer is up to date ({InstallerCore.InstallerVersion}).");
+                }
+            }
+            catch (Exception ex)
+            {
+                LatestInstallerVersionText.Text = "Error";
+                Log($"Could not check installer version: {ex.Message}");
+            }
+        }
+
+        private async void UpdateInstaller_Click(object sender, RoutedEventArgs e)
+        {
+            if (_latestRelease == null)
+            {
+                Log("Fetching release info first…");
+                await CheckForUpdates();
+                if (_latestRelease == null) return;
+            }
+
+            var confirm = MessageBox.Show(
+                "The installer will download an updated version of itself, close, and restart automatically.\n\nContinue?",
+                "Update Installer", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            if (confirm != MessageBoxResult.Yes) return;
+
+            SetBusy(true);
+            ProgressBar.Visibility = Visibility.Visible;
+            ProgressBar.Value = 0;
+            _cts = new CancellationTokenSource();
+            var progress = new Progress<(int Percent, string Message)>(p =>
+            {
+                ProgressBar.Value = p.Percent;
+                Log(p.Message);
+            });
+            try
+            {
+                await InstallerCore.SelfUpdate(_latestRelease, progress, _cts.Token);
+                // Give the cmd script a moment to spawn, then exit
+                await Task.Delay(800);
+                System.Windows.Application.Current.Shutdown();
+            }
+            catch (OperationCanceledException)
+            {
+                Log("Installer update cancelled.");
+            }
+            catch (Exception ex)
+            {
+                Log($"ERROR updating installer: {ex.Message}");
+                MessageBox.Show($"Self-update failed:\n{ex.Message}\n\nPlease download the latest installer manually from:\nhttps://github.com/kpteam/gold-rush-mod-menu/releases",
+                                "Update Failed", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                SetBusy(false);
+                ProgressBar.Visibility = Visibility.Collapsed;
+            }
+        }
+
         // ── Install ────────────────────────────────────────────────────────────
         private async void Install_Click(object sender, RoutedEventArgs e)
         {
@@ -163,7 +245,56 @@ namespace GoldRushInstaller
             }
         }
 
-        // ── Uninstall ──────────────────────────────────────────────────────────
+        // ── Remove mod only ────────────────────────────────────────────────────
+        private void RemoveMod_Click(object sender, RoutedEventArgs e)
+        {
+            var gamePath = GamePathBox.Text.Trim();
+            if (!InstallerCore.IsValidGameFolder(gamePath))
+            {
+                Log("ERROR: Please select a valid game folder first.");
+                return;
+            }
+
+            var v = InstallerCore.GetInstalledVersion(gamePath);
+            if (v == null)
+            {
+                Log("Mod is not installed — nothing to remove.");
+                MessageBox.Show("The mod does not appear to be installed in this folder.",
+                                "Not Installed", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            var confirm = MessageBox.Show(
+                "This will remove ONLY the mod DLL, version file, and mod config file.\n\n" +
+                "BepInEx, winhttp.dll, and all other files will be left completely intact.\n\n" +
+                "You can reinstall the mod at any time using the Install / Update button.\n\nContinue?",
+                "Remove Mod Only", MessageBoxButton.YesNo, MessageBoxImage.Question);
+            if (confirm != MessageBoxResult.Yes) return;
+
+            SetBusy(true);
+            ProgressBar.Visibility = Visibility.Visible;
+            var progress = new Progress<(int, string)>(p => { ProgressBar.Value = p.Item1; Log(p.Item2); });
+            try
+            {
+                InstallerCore.RemoveModOnly(gamePath, progress);
+                RefreshInstalledVersion();
+                MessageBox.Show(
+                    "Mod removed successfully.\n\nBepInEx and all other files are untouched.\n" +
+                    "Click 'Install / Update Mod' to reinstall at any time.",
+                    "Done", MessageBoxButton.OK, MessageBoxImage.Information);
+            }
+            catch (Exception ex)
+            {
+                Log($"ERROR removing mod: {ex.Message}");
+            }
+            finally
+            {
+                SetBusy(false);
+                ProgressBar.Visibility = Visibility.Collapsed;
+            }
+        }
+
+        // ── Full Uninstall ─────────────────────────────────────────────────────
         private void Uninstall_Click(object sender, RoutedEventArgs e)
         {
             var gamePath = GamePathBox.Text.Trim();
@@ -174,8 +305,10 @@ namespace GoldRushInstaller
             }
 
             var confirm = MessageBox.Show(
-                "This will remove the mod, BepInEx hook (winhttp.dll), and your config file.\n\nThe game will return to vanilla.\n\nContinue?",
-                "Confirm Uninstall", MessageBoxButton.YesNo, MessageBoxImage.Question);
+                "FULL UNINSTALL will remove the mod AND the BepInEx loader hook (winhttp.dll + doorstop_config.ini).\n\n" +
+                "The game will be returned to a completely vanilla state.\n\n" +
+                "Use 'Remove Mod Only' if you just want to disable the mod while keeping BepInEx.\n\nContinue?",
+                "Confirm Full Uninstall", MessageBoxButton.YesNo, MessageBoxImage.Warning);
             if (confirm != MessageBoxResult.Yes) return;
 
             SetBusy(true);
@@ -185,7 +318,7 @@ namespace GoldRushInstaller
             {
                 InstallerCore.Uninstall(gamePath, progress);
                 RefreshInstalledVersion();
-                MessageBox.Show("Mod uninstalled successfully. Game is back to vanilla.",
+                MessageBox.Show("Full uninstall complete. Game is back to completely vanilla.",
                                 "Uninstall Complete", MessageBoxButton.OK, MessageBoxImage.Information);
             }
             catch (Exception ex)
@@ -219,10 +352,13 @@ namespace GoldRushInstaller
         // ── Helpers ────────────────────────────────────────────────────────────
         private void SetBusy(bool busy)
         {
-            InstallButton.IsEnabled   = !busy;
-            UninstallButton.IsEnabled = !busy;
-            BrowseButton.IsEnabled    = !busy;
-            CheckUpdateButton.IsEnabled = !busy;
+            InstallButton.IsEnabled         = !busy;
+            RemoveModButton.IsEnabled       = !busy;
+            UninstallButton.IsEnabled       = !busy;
+            UpdateInstallerButton.IsEnabled = !busy && (LatestInstallerVersionText.Text != "---" && LatestInstallerVersionText.Text != "Checking..." && LatestInstallerVersionText.Text != "N/A" && LatestInstallerVersionText.Text != "Error"
+                && InstallerCore.IsNewer(InstallerCore.InstallerVersion, LatestInstallerVersionText.Text));
+            BrowseButton.IsEnabled          = !busy;
+            CheckUpdateButton.IsEnabled     = !busy;
         }
 
         private void Log(string msg)

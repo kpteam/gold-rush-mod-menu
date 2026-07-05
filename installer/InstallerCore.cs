@@ -16,12 +16,16 @@ namespace GoldRushInstaller
 
     public class InstallerCore
     {
-        private const string RepoOwner    = "kpteam";
-        private const string RepoName     = "gold-rush-mod-menu";
-        private const string ApiBase      = "https://api.github.com";
-        private const string VersionFile  = @"BepInEx\plugins\GoldRushModMenu.version";
-        private const string PluginDll    = @"BepInEx\plugins\GoldRushModMenu.dll";
-        private const string GameExe      = "GoldMiningSimulator.exe";
+        private const string RepoOwner         = "kpteam";
+        private const string RepoName          = "gold-rush-mod-menu";
+        private const string ApiBase           = "https://api.github.com";
+        private const string VersionFile       = @"BepInEx\plugins\GoldRushModMenu.version";
+        private const string PluginDll         = @"BepInEx\plugins\GoldRushModMenu.dll";
+        private const string PluginConfig      = @"BepInEx\config\com.goldrushmod.modmenu.cfg";
+        private const string GameExe           = "GoldMiningSimulator.exe";
+
+        /// <summary>Current installer version. Bump this with each new installer release.</summary>
+        public const string InstallerVersion   = "1.1.0";
 
         private static readonly HttpClient Http = new()
         {
@@ -136,6 +140,120 @@ namespace GoldRushInstaller
             return new GithubRelease(tag, html, assets);
         }
 
+        // ── Installer self-update ─────────────────────────────────────────────
+        /// <summary>
+        /// Fetches the raw installer/version.txt from the repo to see if a newer
+        /// installer is available without touching the mod release channel.
+        /// Returns null if the version file doesn't exist yet.
+        /// </summary>
+        public static async Task<string?> GetInstallerRemoteVersion()
+        {
+            const string url = $"https://raw.githubusercontent.com/{RepoOwner}/{RepoName}/master/installer/version.txt";
+            try
+            {
+                var text = await Http.GetStringAsync(url);
+                return text.Trim().TrimStart('v');
+            }
+            catch { return null; }
+        }
+
+        /// <summary>Returns true if <paramref name="remote"/> is newer than <paramref name="local"/>.</summary>
+        public static bool IsNewer(string local, string remote)
+        {
+            if (Version.TryParse(local, out var l) && Version.TryParse(remote, out var r))
+                return r > l;
+            return string.Compare(remote, local, StringComparison.OrdinalIgnoreCase) > 0;
+        }
+
+        /// <summary>
+        /// Downloads the latest installer exe from the GitHub release assets,
+        /// writes it next to the current exe with a ".new" suffix, then launches
+        /// a small cmd script that waits for the current process to exit, replaces
+        /// the exe, and restarts it.
+        /// </summary>
+        public static async Task SelfUpdate(
+            GithubRelease release,
+            IProgress<(int Percent, string Message)> progress,
+            CancellationToken ct)
+        {
+            var asset = release.Assets.Find(a =>
+                a.Name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) &&
+                a.Name.Contains("Installer", StringComparison.OrdinalIgnoreCase))
+                ?? release.Assets.Find(a => a.Name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                ?? throw new Exception("No installer EXE asset found in the GitHub release.");
+
+            progress.Report((5, $"Downloading installer update: {asset.Name}…"));
+
+            var currentExe = System.Diagnostics.Process.GetCurrentProcess().MainModule?.FileName
+                             ?? System.AppContext.BaseDirectory + "GoldRushModMenuInstaller.exe";
+
+            var newExe = currentExe + ".new";
+            var oldExe = currentExe + ".old";
+
+            using (var resp = await Http.GetAsync(asset.BrowserDownloadUrl, HttpCompletionOption.ResponseHeadersRead, ct))
+            {
+                resp.EnsureSuccessStatusCode();
+                var total = resp.Content.Headers.ContentLength ?? asset.Size;
+                await using var stream = await resp.Content.ReadAsStreamAsync(ct);
+                await using var file   = File.Create(newExe);
+                var buf  = new byte[81920];
+                long read = 0;
+                int n;
+                while ((n = await stream.ReadAsync(buf, ct)) > 0)
+                {
+                    await file.WriteAsync(buf.AsMemory(0, n), ct);
+                    read += n;
+                    int pct = total > 0 ? (int)(read * 85 / total) + 5 : 50;
+                    progress.Report((pct, $"Downloading… {read / 1024:N0} / {total / 1024:N0} KB"));
+                }
+            }
+
+            progress.Report((95, "Preparing update script…"));
+
+            // Build a cmd script: wait for this PID to exit → move files → restart
+            int pid = System.Diagnostics.Process.GetCurrentProcess().Id;
+            var script = $@"@echo off
+:wait
+tasklist /FI ""PID eq {pid}"" 2>NUL | find ""{pid}"" >NUL
+if not errorlevel 1 (
+    timeout /t 1 /nobreak >NUL
+    goto :wait
+)
+move /Y ""{newExe}"" ""{currentExe}""
+if exist ""{oldExe}"" del /F /Q ""{oldExe}""
+start """" ""{currentExe}""
+";
+            var scriptPath = Path.Combine(Path.GetTempPath(), "grmod_update.cmd");
+            File.WriteAllText(scriptPath, script);
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe", $"/c \"{scriptPath}\"")
+            {
+                WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
+                CreateNoWindow = true
+            });
+
+            progress.Report((100, "Update downloaded. Restarting installer…"));
+        }
+
+        // ── Remove mod only (leaves BepInEx intact) ───────────────────────────
+        /// <summary>
+        /// Removes only the mod plugin DLL, version file, and mod config file.
+        /// BepInEx core files, winhttp.dll, doorstop_config.ini, and all other
+        /// mods/plugins are left completely untouched.
+        /// </summary>
+        public static void RemoveModOnly(string gamePath, IProgress<(int, string)> progress)
+        {
+            progress.Report((10, "Removing mod DLL…"));
+            Delete(Path.Combine(gamePath, PluginDll));
+
+            progress.Report((50, "Removing version tracking file…"));
+            Delete(Path.Combine(gamePath, VersionFile));
+
+            progress.Report((80, "Removing mod config…"));
+            Delete(Path.Combine(gamePath, PluginConfig));
+
+            progress.Report((100, "Mod removed. BepInEx and all other files are intact."));
+        }
+
         // ── Install / update ──────────────────────────────────────────────────
         public static async Task Install(
             string gamePath,
@@ -197,19 +315,19 @@ namespace GoldRushInstaller
             progress.Report((100, $"Done! Installed {release.TagName}. Launch the game and press F10."));
         }
 
-        // ── Uninstall ─────────────────────────────────────────────────────────
+        // ── Full uninstall (removes BepInEx hook + mod) ───────────────────────
         public static void Uninstall(string gamePath, IProgress<(int, string)> progress)
         {
             progress.Report((10, "Removing mod DLL…"));
             Delete(Path.Combine(gamePath, PluginDll));
             Delete(Path.Combine(gamePath, VersionFile));
-            Delete(Path.Combine(gamePath, @"BepInEx\config\com.goldrushmod.modmenu.cfg"));
+            Delete(Path.Combine(gamePath, PluginConfig));
 
-            progress.Report((50, "Removing BepInEx hook (winhttp.dll)…"));
+            progress.Report((60, "Removing BepInEx hook (winhttp.dll / doorstop)…"));
             Delete(Path.Combine(gamePath, "winhttp.dll"));
             Delete(Path.Combine(gamePath, "doorstop_config.ini"));
 
-            progress.Report((100, "Uninstalled. Game is back to vanilla."));
+            progress.Report((100, "Full uninstall complete. Game is back to vanilla."));
         }
 
         private static void Delete(string path)
