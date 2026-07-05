@@ -147,22 +147,42 @@ namespace GoldRushInstaller
 
         private async void UpdateInstaller_Click(object sender, RoutedEventArgs e)
         {
-            if (_latestRelease == null)
+            SetBusy(true);
+            ProgressBar.Visibility = Visibility.Visible;
+            ProgressBar.Value = 0;
+            _cts = new CancellationTokenSource();
+
+            GithubRelease? installerRelease = null;
+            try
             {
-                Log("Fetching release info first…");
-                await CheckForUpdates();
-                if (_latestRelease == null) return;
+                Log("Fetching installer release info…");
+                installerRelease = await InstallerCore.GetLatestInstallerRelease();
+                if (installerRelease == null)
+                {
+                    Log("No installer release found on GitHub.");
+                    MessageBox.Show("Could not find an installer release on GitHub.\nPlease download manually from:\nhttps://github.com/kpteam/gold-rush-mod-menu/releases",
+                                    "Not Found", MessageBoxButton.OK, MessageBoxImage.Warning);
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"ERROR fetching installer release: {ex.Message}");
+                SetBusy(false);
+                ProgressBar.Visibility = Visibility.Collapsed;
+                return;
             }
 
             var confirm = MessageBox.Show(
                 "The installer will download an updated version of itself, close, and restart automatically.\n\nContinue?",
                 "Update Installer", MessageBoxButton.YesNo, MessageBoxImage.Question);
-            if (confirm != MessageBoxResult.Yes) return;
+            if (confirm != MessageBoxResult.Yes)
+            {
+                SetBusy(false);
+                ProgressBar.Visibility = Visibility.Collapsed;
+                return;
+            }
 
-            SetBusy(true);
-            ProgressBar.Visibility = Visibility.Visible;
-            ProgressBar.Value = 0;
-            _cts = new CancellationTokenSource();
             var progress = new Progress<(int Percent, string Message)>(p =>
             {
                 ProgressBar.Value = p.Percent;
@@ -170,7 +190,7 @@ namespace GoldRushInstaller
             });
             try
             {
-                await InstallerCore.SelfUpdate(_latestRelease, progress, _cts.Token);
+                await InstallerCore.SelfUpdate(installerRelease, progress, _cts.Token);
                 // Give the cmd script a moment to spawn, then exit
                 await Task.Delay(800);
                 System.Windows.Application.Current.Shutdown();

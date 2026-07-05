@@ -117,26 +117,65 @@ namespace GoldRushInstaller
         }
 
         // ── GitHub releases ───────────────────────────────────────────────────
+        /// <summary>
+        /// Returns the latest release that contains a ZIP asset (the mod release).
+        /// Walks all releases so installer-only releases are skipped automatically.
+        /// </summary>
         public static async Task<GithubRelease?> GetLatestRelease()
         {
-            var url = $"{ApiBase}/repos/{RepoOwner}/{RepoName}/releases/latest";
+            // List up to 10 releases and find the first one with a ZIP asset
+            var url  = $"{ApiBase}/repos/{RepoOwner}/{RepoName}/releases?per_page=10";
+            var json = await Http.GetStringAsync(url);
+            using var doc  = JsonDocument.Parse(json);
+
+            foreach (var rel in doc.RootElement.EnumerateArray())
+            {
+                var release = ParseRelease(rel);
+                if (release.Assets.Exists(a => a.Name.EndsWith(".zip", StringComparison.OrdinalIgnoreCase)))
+                    return release;
+            }
+
+            // Fallback: return the very latest even if no ZIP (shows a cleaner error later)
+            var fallback = $"{ApiBase}/repos/{RepoOwner}/{RepoName}/releases/latest";
+            var fb       = await Http.GetStringAsync(fallback);
+            using var fbDoc = JsonDocument.Parse(fb);
+            return ParseRelease(fbDoc.RootElement);
+        }
+
+        /// <summary>
+        /// Returns the latest release that contains an installer EXE asset.
+        /// Used by self-update to avoid picking up mod releases.
+        /// </summary>
+        public static async Task<GithubRelease?> GetLatestInstallerRelease()
+        {
+            var url  = $"{ApiBase}/repos/{RepoOwner}/{RepoName}/releases?per_page=10";
             var json = await Http.GetStringAsync(url);
             using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
 
+            foreach (var rel in doc.RootElement.EnumerateArray())
+            {
+                var release = ParseRelease(rel);
+                if (release.Assets.Exists(a =>
+                        a.Name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) &&
+                        a.Name.Contains("Installer", StringComparison.OrdinalIgnoreCase)))
+                    return release;
+            }
+            return null;
+        }
+
+        private static GithubRelease ParseRelease(JsonElement root)
+        {
             var tag    = root.GetProperty("tag_name").GetString() ?? "";
             var html   = root.GetProperty("html_url").GetString()  ?? "";
             var assets = new List<GithubAsset>();
-
             if (root.TryGetProperty("assets", out var arr))
                 foreach (var a in arr.EnumerateArray())
                 {
-                    var name = a.GetProperty("name").GetString() ?? "";
-                    var dlUrl= a.GetProperty("browser_download_url").GetString() ?? "";
-                    var size = a.GetProperty("size").GetInt64();
+                    var name  = a.GetProperty("name").GetString()                    ?? "";
+                    var dlUrl = a.GetProperty("browser_download_url").GetString()    ?? "";
+                    var size  = a.GetProperty("size").GetInt64();
                     assets.Add(new GithubAsset(name, dlUrl, size));
                 }
-
             return new GithubRelease(tag, html, assets);
         }
 
